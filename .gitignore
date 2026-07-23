@@ -1,0 +1,22 @@
+# 编译产物
+build/
+*.o
+*.d
+
+# 编辑器
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 固件镜像 (不提交二进制)
+*.img
+*.dtb
+*.bin
+100ask_imx6ull_v1.1.pdf
+tools/v4l2_capture
