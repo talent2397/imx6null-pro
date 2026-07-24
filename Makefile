@@ -27,15 +27,17 @@ COMMON_SRCS := \
 APP_SRCS := \
     $(SRC_DIR)/app/main.c \
 
-# 待阶段 1 添加: HAL 模块源文件
-# HAL_SRCS := ...
+# 阶段 1: HAL 模块源文件
+HAL_SRCS := \
+    $(SRC_DIR)/hal/imu.c \
 
-ALL_SRCS := $(COMMON_SRCS) $(APP_SRCS)
+ALL_SRCS := $(COMMON_SRCS) $(APP_SRCS) $(HAL_SRCS)
 
 # ---- 自动生成目标文件列表 ----
 COMMON_OBJS   := $(COMMON_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 APP_OBJS      := $(APP_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
-ALL_OBJS      := $(COMMON_OBJS) $(APP_OBJS)
+HAL_OBJS      := $(HAL_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
+ALL_OBJS      := $(COMMON_OBJS) $(APP_OBJS) $(HAL_OBJS)
 
 # ---- 工具链配置 ----
 # 默认: 本地 GCC (PC 调试)
@@ -49,7 +51,7 @@ endif
 CFLAGS   := -std=gnu99
 CFLAGS   += -Wall -Wextra -Werror
 CFLAGS   += -Wshadow -Wundef -Wunused -Wmissing-prototypes
-CFLAGS   += -I$(INC_DIR)
+CFLAGS   += -I$(INC_DIR) -I$(INC_DIR)/hal
 
 # ---- 链接选项 ----
 LDFLAGS  := -lpthread -lrt

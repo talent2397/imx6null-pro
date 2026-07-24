@@ -40,6 +40,7 @@ typedef enum {
     CANOPEN_ERR_STATE             = -9,   /* 当前状态不允许此操作     */
     CANOPEN_ERR_PERMISSION        = -10,  /* 权限不足                 */
     CANOPEN_ERR_DATA_SIZE         = -11,  /* 数据大小不匹配           */
+    CANOPEN_ERR_IO                = -12,  /* IO 读写失败 (文件/设备)  */
 
     /* ---- NMT 模块错误 (-100..-199) ---- */
     CANOPEN_ERR_NMT_INVALID_CMD   = -100, /* 无效的 NMT 命令          */

@@ -35,6 +35,7 @@ static const error_desc_t error_table[] = {
     { CANOPEN_ERR_STATE,            "状态不允许" },
     { CANOPEN_ERR_PERMISSION,       "权限不足" },
     { CANOPEN_ERR_DATA_SIZE,        "数据大小不匹配" },
+    { CANOPEN_ERR_IO,               "IO 读写失败" },
 
     /* NMT 模块 */
     { CANOPEN_ERR_NMT_INVALID_CMD,  "无效NMT命令" },

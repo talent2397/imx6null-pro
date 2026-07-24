@@ -16,10 +16,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "common/types.h"
 #include "common/error.h"
 #include "common/log.h"
+
+/* HAL 模块 */
+#include "hal/imu.h"
 
 #define PROGRAM_NAME    "monitor_gateway"
 #define PROGRAM_VERSION "2.0.0"
@@ -59,6 +63,53 @@ static void run_selftest(void)
     LOG_INFO("SELFTEST", "ARRAY_SIZE(test_arr)=%zu (期望=5)", ARRAY_SIZE(test_arr));
     LOG_INFO("SELFTEST", "MIN(3,8)=%d MAX(3,8)=%d CLAMP(15,0,10)=%d",
              MIN(3, 8), MAX(3, 8), CLAMP(15, 0, 10));
+
+    /* ---- IMU 模块自检 ---- */
+    LOG_INFO("SELFTEST", "--- IMU 模块自检 ---");
+
+    struct imu_dev  imu;
+    struct imu_data data;
+    canopen_error_t ret;
+
+    ret = imu_init(&imu, NULL);  /* NULL = 使用默认 IIO 设备名 */
+    if (ret != CANOPEN_OK) {
+        /*
+         * PC 编译环境下 sysfs 路径不存在，这是预期行为。
+         * 在板子上运行时应该成功。
+         */
+        LOG_WARN("SELFTEST", "IMU 初始化失败 (错误码 %d: %s)。"
+                 "PC 环境下预期如此，请在板子上验证。",
+                 ret, canopen_strerror(ret));
+    } else {
+        LOG_INFO("SELFTEST", "[PASS] IMU 初始化成功 (%s)", imu.dev_name);
+
+        /* 读取并打印当前采样频率 */
+        u32 freq;
+        if (imu_get_sampling_freq(&imu, &freq) == CANOPEN_OK) {
+            LOG_INFO("SELFTEST", "  当前采样频率: %u Hz", freq);
+        }
+
+        /* 连续读取 5 帧数据，每次间隔 20ms */
+        LOG_INFO("SELFTEST", "  连续读取 5 帧 IMU 数据 (间隔 20ms):");
+        for (int i = 0; i < 5; i++) {
+            ret = imu_read(&imu, &data);
+            if (ret == CANOPEN_OK) {
+                imu_print_raw(&data);
+            } else {
+                LOG_ERROR("SELFTEST", "  第 %d 帧读取失败: %s",
+                          i + 1, canopen_strerror(ret));
+                break;
+            }
+            /*
+             * 阶段 1 用 busy-wait 简单延时。
+             * 阶段 2 将换用 timerfd 精确周期触发。
+             */
+            usleep(20000);
+        }
+
+        LOG_INFO("SELFTEST", "[PASS] IMU 数据读取完成");
+        imu_close(&imu);
+    }
 
     LOG_INFO("SELFTEST", "========== 自检结束 ==========");
 }
