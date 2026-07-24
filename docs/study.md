@@ -80,6 +80,61 @@
 - 当前板子系统已就绪，有 adb shell 可以操作，改什么推什么即可
 - 参考: 内核源码 `arch/arm/boot/dts/imx6ull-14x14-evk.dts`, `arch/arm/boot/dts/imx6ull.dtsi`
 
+#### 8. 物理值计算原理与工业实践
+
+- 核心公式: **物理值 = raw × scale**，这是所有 MEMS 传感器标准做法
+- 芯片输出的是 ADC 计数值 (无量纲)，scale 由量程决定
+- `scale = (量程_g × 9.80665) / 32768` (16-bit signed, 半量程=2^15)
+- ICM-20608 加速度: ±2g→0.000598, ±4g→0.001196, ±8g→0.002392, ±16g→0.004784
+- 工业上加三层: 低通滤波(去噪) + 温度补偿 + 零偏校准 + 坐标系旋转
+- 不硬编码 scale 的原因: 量程可以动态切换，从 sysfs 读永远正确
+- 参考: `src/hal/imu.c` `imu_read()` 函数
+
+#### 9. sysfs 全貌 — 不止 9 个值
+
+- IIO 设备下有 30+ 个 sysfs 属性文件
+- 核心 9 个: in_accel_{x,y,z}_raw, in_anglvel_{x,y,z}_raw, in_accel_scale, in_anglvel_scale, sampling_frequency
+- 未用到: in_temp_raw/scale (芯片温度), in_*_offset (零偏), buffer/* (buffer模式), trigger/* (触发器), power/* (电源)
+- 参考: `src/hal/imu.c` — 阶段 1 只封装核心 9 个
+
+#### 10. sysfs vs IIO — 两者不是一回事
+
+- **IIO** = 内核子系统，专门管传感器和 ADC/DAC (同类: Input子系统、ALSA、V4L2)
+- **sysfs** = 通用文件系统，IIO 用它暴露数据给用户空间 (其他子系统也在用: /sys/class/net/, /sys/class/power_supply/)
+- 交互链路: 用户空间 → sysfs(VFS层) → IIO框架(read_raw回调) → 驱动(SPI操作寄存器) → 硬件
+- sysfs 是"文件"，但不是真文件 — 每次 open 触发内核回调实时生成数据
+- 用文件接口的好处: 任何语言能用、不用链接库、权限控制简单、cat/echo 就能调试
+
+#### 11. Linux 设备三大类型 + 多种用户空间接口
+
+**内核设备三大类型:**
+
+| | 块设备 | 字符设备 | 网络设备 |
+|---|---|---|---|
+| /dev 节点 | 有 (b) | 有 (c) | **没有!** |
+| API | lseek+read/write | read/write | socket+send/recv |
+| 例子 | SSD, SD卡 | 键盘, IMU, 串口 | eth0, can0 |
+
+**两个独立维度必须分开:**
+- 维度一: 内核设备类型 (内核怎么写驱动) — block/char/netif
+- 维度二: 用户空间接口 (你怎么访问) — /dev/\*, /sys/\*(sysfs), /proc/\*(procfs), socket, ioctl, mmap, netlink
+
+**sysfs 本质**: 文件系统 (ramfs)，不是设备类型。背靠 Kobject 机制——内核里每个设备/驱动/总线都是一个 kobject，sysfs 把 kobject 树暴露成目录结构。
+
+**同一个设备可同时出现在多个接口:**
+- /dev/iio:device1 → open/read (当设备)
+- /sys/bus/iio/devices/iio:device1/ → fopen/fscanf (当文件)
+- /sys/class/net/can0/ → 查看 can0 信息 (但收发数据必须走 socket)
+
+**项目 5 个外设的全路径:**
+- IMU: 字符设备, /dev/iio:device1, sysfs (阶段1) → /dev read() (阶段2)
+- CAN: 网络设备, **无 /dev 节点**, socket(AF_CAN)
+- Button: 字符设备, /dev/input/event1, read(struct input_event)
+- Audio: 字符设备, /dev/snd/pcm*, ioctl/mmap (ALSA 库)
+- LED: sysfs (/sys/class/gpio/gpio133/), fopen/fprintf
+
+- 参考: `docs/需求.md` §2.1 硬件资源清单, 后续见对应 HAL 模块源码
+
 ---
 
 ### Q&A
@@ -107,6 +162,100 @@
 - 编译: `make imx6ull-14x14-evk.dtb`（只编设备树，几秒）
 - 部署: `adb push xxx.dtb /boot/` → `reboot`
 - **不需要重新烧录镜像**，dtb 是独立文件
+
+#### Q3: 物理值 = raw × scale 合理吗？工业上也是这样做吗？
+
+**答**: 合理，这就是标准做法。所有 MEMS 传感器输出的都是 ADC 计数值，必须乘 scale 才能得物理量。
+
+- 芯片内部: 物理量 → MEMS 变形 → 电容变化 → ADC → 16-bit raw
+- scale 由量程决定: `scale = (量程_g × 9.80665) / 32768`
+- ICM-20608 默认 ±2g → scale=0.000598; ±4g → 0.001196; ±8g → 0.002392; ±16g → 0.004784
+- scale 从 sysfs 动态读取而不是硬编码: 驱动知道当前量程，换量程时 scale 自动变
+- 工业上核心公式一样，多加了三层: 低通滤波(去噪) + 温度补偿(scale 漂移) + 零偏校准(静止归零) + 坐标系旋转(芯片朝向修正)
+- 参考: `src/hal/imu.c` 第 3 部分 `imu_read()` 实现
+
+#### Q4: sysfs 只有 9 个值吗？
+
+**答**: 不止，总共约 30+ 个属性文件，9 个核心的是你目前用到的。
+
+- 在用 (9): in_accel_{x,y,z}_raw, in_anglvel_{x,y,z}_raw, in_accel_scale, in_anglvel_scale, sampling_frequency
+- 未用但存在: in_temp_raw/scale (芯片温度), in_accel_offset_{x,y,z}/in_anglvel_offset_{x,y,z} (零偏校准), name (芯片名), buffer/* (buffer模式), trigger/* (触发器), power/* (电源管理)
+- 参考: `src/hal/imu.c` — 阶段 1 只封装了核心 9 个
+
+#### Q5: sysfs 和 IIO 到底是什么关系？
+
+**答**: IIO 是内核里管传感器的"部门"，sysfs 是这个部门的"对外开放窗口"。
+
+```
+用户空间 fopen/read → sysfs (VFS 文件系统层) → IIO 框架 (传感器抽象层)
+  → IIO 回调 read_raw() → 驱动 (SPI 操作寄存器) → 硬件 (ICM-20608)
+```
+
+- sysfs 是通用机制: 所有内核子系统都在用 (/sys/class/net/eth0/, /sys/class/power_supply/BAT0/ 等)
+- IIO 用 sysfs 暴露数据是因为: 任何语言都能读 (POSIX 标准)、不用链接库、权限控制简单、cat/echo 就能调试
+- sysfs 不是"真文件"——每次 fopen 触发内核回调，实时生成数据
+- 参考: 上次「知识点 4: 驱动四层结构」
+
+#### Q6: 数据传输不都走 sysfs 吧？不同外设有不同接口？
+
+**答**: 对。不同外设属于不同内核子系统，对外暴露的接口完全不同。项目里 5 个外设 5 种路:
+
+| 外设 | 子系统 | 暴露接口 | API |
+|------|--------|---------|-----|
+| IMU | IIO | sysfs (慢) / /dev/iio:deviceN (快) | fopen / read() |
+| CAN | SocketCAN | socket (AF_CAN) | socket()/bind()/recv() |
+| Button | Input | /dev/input/eventN 字符设备 | open()/epoll/read(struct input_event) |
+| Audio | ALSA | /dev/snd/pcm* 字符设备 | snd_pcm_open/ioctl/mmap |
+| LED | GPIO | sysfs (/sys/class/gpio/) | fopen/fprintf |
+
+三类接口对比: sysfs (字符串，低频配置) vs Socket (二进制 struct，网络协议) vs 字符设备 (二进制 struct，高频批量)
+
+#### Q7: 块设备、字符设备、网络设备是什么？sysfs 属于哪一种？
+
+**答**: 内核设备分三大类，sysfs 不是设备类型，是文件系统。
+
+**三大内核设备类型:**
+
+| | 块设备 (block) | 字符设备 (char) | 网络设备 (netif) |
+|---|---|---|---|
+| 数据单位 | 块 (512B+) | 字节流/消息 | 包 (packet) |
+| 寻址 | 随机 | 顺序/流式 | 无 |
+| 有无/dev节点 | 有 (b) | 有 (c) | **没有!** |
+| 内核缓冲 | 有(page cache) | 无 | 自己的一套 |
+| 例子 | SSD/HDD/SD卡 | 键盘/串口/IMU | eth0/can0 |
+| API | lseek+read/write | read/write | socket+send/recv |
+
+**两个维度必须分开:**
+
+```
+维度一: 内核设备类型 (内核源码怎么写驱动)
+  → block / char / netif
+
+维度二: 用户空间接口 (你怎么访问它)
+  → /dev/* (设备节点)
+  → /sys/* (sysfs 属性文件)
+  → /proc/* (procfs 进程信息)
+  → socket (网络协议栈)
+  → ioctl / mmap / netlink
+```
+
+**sysfs 的本质:** 它是文件系统 (ramfs)，挂载在 /sys。背后的机制是 Kobject——内核里每个设备/驱动/总线都是一个 kobject，sysfs 把 kobject 树暴露成目录结构。每个设备同时在两个地方出现:
+
+```
+/dev/iio:device1     ← devtmpfs 设备节点 (当设备, open/read)
+/sys/bus/iio/devices/iio:device1/  ← sysfs 属性 (当文件, fopen/fscanf)
+/sys/class/net/can0/                ← sysfs 看网络设备信息 (但收发数据必须走 socket!)
+```
+
+**项目里每个外设的全路径:**
+
+| 外设 | 内核类型 | /dev 节点 | sysfs 路径 | 数据走哪 |
+|------|---------|-----------|-----------|---------|
+| IMU | 字符设备 | /dev/iio:device1 | /sys/bus/iio/devices/iio:device1/ | 阶段1: sysfs; 阶段2: /dev |
+| CAN | 网络设备 | **无** | /sys/class/net/can0/ | socket(AF_CAN) |
+| Button | 字符设备 | /dev/input/event1 | /sys/class/input/event1/ | read(/dev/input/event1) |
+| Audio | 字符设备 | /dev/snd/pcmC0D0p | /sys/class/sound/ | ioctl(/dev/snd/*) |
+| LED | 字符设备 | /sys/class/gpio/gpio133/ | fopen/fprintf |
 
 #### 6. IMU 模块实现详解 (阶段 1-1)
 
